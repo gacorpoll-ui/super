@@ -1,0 +1,18 @@
+symbols:
+  - XAUUSD
+  - BTCUSD
+  - EURUSD
+timeframes:
+  - M5
+  - M15
+  - M30
+  - H1
+max_position_per_tf: 5
+tp_adj: 700.7
+sl_adj: 100.2
+point_size_map:
+  XAUUSD: 0.01
+  BTCUSD: 0.1
+  EURUSD: 0.0001
+
+
