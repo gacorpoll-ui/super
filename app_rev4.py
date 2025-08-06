@@ -17,9 +17,11 @@ from wtforms import StringField, PasswordField, SubmitField, FileField, HiddenFi
 from wtforms.validators import DataRequired, EqualTo, Regexp
 from wtforms import BooleanField
 from dateutil.relativedelta import relativedelta
+from functools import wraps
 
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(24)
+# --- PERUBAHAN: Memuat secret key dari environment variable untuk keamanan ---
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(24))
 app.config['SECRET_KEY'] = app.secret_key
 socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins="*")
 DATABASE_FILE = 'users.db'
@@ -30,7 +32,12 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(threadName)s - %(levelname)s - %(message)s')
 
 # --- Global States ---
-INTERNAL_SECRET_KEY = "c1b086d4-a681-48df-957f-6fcc35a82f6d"
+INTERNAL_SECRET_KEY = os.environ.get('INTERNAL_SECRET_KEY')
+if not INTERNAL_SECRET_KEY:
+    logging.critical("FATAL: INTERNAL_SECRET_KEY environment variable not set.")
+    # Di lingkungan produksi, Anda mungkin ingin keluar dari aplikasi di sini
+    # exit(1)
+
 last_signal_info = {}
 signal_context_cache = {}
 daily_signal_counts = {} # Key: api_key, Value: {'date': 'YYYY-MM-DD', 'count': X}
@@ -48,20 +55,20 @@ def get_user_status(api_key: str) -> str:
     """Mendapatkan status user ('active', 'trial', 'expired', 'invalid') dari API key."""
     if not api_key:
         return 'invalid'
-    
+
     db = get_db()
     user = db.execute("SELECT end_date, status FROM users WHERE api_key = ?", (api_key,)).fetchone()
-    
+
     if not user:
         return 'invalid'
-    
+
     if user['status'] not in ['active', 'trial']:
         return user['status']
 
     license_end = datetime.strptime(user['end_date'], '%Y-%m-%d').date()
     if date.today() > license_end:
         return 'expired'
-        
+
     return user['status']
 
 def get_open_positions(api_key, symbol):
@@ -176,11 +183,26 @@ class SubscribeForm(FlaskForm):
 # === ROUTES ===
 @app.before_request
 def require_login():
-    public_routes = ['login_page', 'register_page', 'get_signal', 'admin_login', 'static', 'status_page', 'receive_signal', 'feedback_trade', 'index', 'home_page', 'panduan_page']
-    if request.path.startswith('/admin') and 'admin_id' in session:
+    # --- PERBAIKAN: Logika otentikasi yang lebih jelas untuk admin dan user ---
+
+    # 1. Tangani rute admin secara terpisah
+    if request.path.startswith('/admin'):
+        # Izinkan akses ke halaman login admin itu sendiri
+        if request.endpoint == 'admin_login_page':
+            return
+        # Jika mencoba akses halaman admin lain tanpa sesi, alihkan ke login admin
+        if 'admin_id' not in session:
+            flash("Anda harus login sebagai admin untuk mengakses halaman ini.", "warning")
+            return redirect(url_for('admin_login_page'))
+        # Jika sudah login admin, izinkan
         return
+
+    # 2. Tangani rute pengguna biasa
+    public_routes = ['login_page', 'register_page', 'get_signal', 'static', 'status_page', 'receive_signal', 'feedback_trade', 'index', 'home_page', 'panduan_page']
     if request.endpoint in public_routes or (request.endpoint and 'static' in request.endpoint):
         return
+
+    # 3. Jika rute tidak publik dan user belum login, alihkan ke login user
     if 'user_id' not in session:
         return redirect(url_for('login_page'))
 
@@ -249,7 +271,7 @@ def dashboard_page():
     user_data = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
     if not user_data: return redirect(url_for('logout'))
     status_text, badge_class = get_user_license_details(user_data)
-    
+
     # Find the most recent signal from the available signals
     current_signal = None
     if last_signal_info:
@@ -321,7 +343,8 @@ def get_signal():
 
     symbol = request.args.get('symbol', 'XAUUSD').upper()
     mapped_symbol = SYMBOL_ALIAS_MAP.get(symbol, symbol)
-    signal_data_key = f"{INTERNAL_SECRET_KEY}_{mapped_symbol}"
+    # The key for last_signal_info should be consistent for all users
+    signal_data_key = f"INTERNAL_SIGNAL_{mapped_symbol}"
     signal_data = last_signal_info.get(signal_data_key)
 
     if not signal_data or (datetime.now() - datetime.strptime(signal_data['timestamp'], '%Y-%m-%d %H:%M:%S')).total_seconds() >= 300:
@@ -332,7 +355,7 @@ def get_signal():
         signal_id = signal_data.get('signal_id')
         context = signal_context_cache.get(signal_id, {})
         profile_name = context.get('profile_name')
-        
+
         allowed_profiles = trial_settings.get('allowed_profiles', [])
         if profile_name and profile_name not in allowed_profiles:
             return jsonify({"order_type": "WAIT", "reason": f"Profile '{profile_name}' requires premium subscription."})
@@ -341,11 +364,11 @@ def get_signal():
         user_counts = daily_signal_counts.get(api_key, {'date': today_str, 'count': 0})
         if user_counts['date'] != today_str:
             user_counts = {'date': today_str, 'count': 0}
-        
+
         limit = trial_settings.get('daily_signal_limit', 3)
         if user_counts['count'] >= limit:
             return jsonify({"order_type": "WAIT", "reason": f"Daily signal limit ({limit}) reached."})
-        
+
         logging.info(f"Trial user {api_key} consuming signal {user_counts.get('count', 0) + 1}/{limit} for today.")
         daily_signal_counts[api_key] = {'date': today_str, 'count': user_counts.get('count', 0) + 1}
 
@@ -358,8 +381,17 @@ def receive_signal():
     global last_signal_info, signal_context_cache
     data = request.json
     if not data: return jsonify({"error": "No data received"}), 400
-    
-    api_key = data.get('api_key', INTERNAL_SECRET_KEY)
+
+    # --- PERUBAHAN: Validasi secret key internal ---
+    if data.get('secret_key') != INTERNAL_SECRET_KEY:
+        logging.warning("Upaya submit sinyal dengan secret key yang salah ditolak.")
+        return jsonify({"error": "Invalid secret key"}), 401
+
+    api_key = data.get('api_key')
+    if not api_key:
+        logging.warning("Upaya submit sinyal tanpa API key ditolak.")
+        return jsonify({"error": "API key is required"}), 400
+
     symbol = data.get('symbol', 'XAUUSD').upper()
     mapped_symbol = SYMBOL_ALIAS_MAP.get(symbol, symbol)
     order_type = data.get('order_type')
@@ -368,28 +400,41 @@ def receive_signal():
 
     signal_context_cache[signal_id] = {
         "score": data.get('score'), "info": data.get('info'), "timestamp": timestamp,
-        "symbol": symbol, "order_type": order_type, "profile_name": data.get('profile_name')
+        "symbol": symbol, "order_type": order_type, "profile_name": data.get('profile_name'),
+        "score_components": data.get('score_components')
     }
-    
+
     signal_payload = {
         'signal_id': signal_id, 'order_type': order_type,
         'timestamp': timestamp, 'signal_json': data.get('signal_json', {})
     }
-    
-    key_to_update = f"{INTERNAL_SECRET_KEY}_{mapped_symbol}"
+
+    # The key for last_signal_info should be consistent for all users
+    key_to_update = f"INTERNAL_SIGNAL_{mapped_symbol}"
     last_signal_info[key_to_update] = signal_payload
     logging.info(f"📢 Sinyal BARU diterima & disiarkan: Type={order_type}, Simbol={symbol}.")
+
+    # --- PENGEMBANGAN: Kirim notifikasi real-time ke dashboard ---
+    notification_data = {
+        "symbol": symbol,
+        "order_type": order_type,
+        "profile_name": data.get('profile_name'),
+        "score": data.get('score'),
+        "entry_price": data.get('signal_json', {}).get(f"{order_type.capitalize()}Entry", "N/A")
+    }
+    socketio.emit('new_signal_notification', notification_data)
+
     return jsonify({"message": "Signal received"}), 200
 
 @app.route("/api/feedback_trade", methods=["POST"])
 def feedback_trade():
     data = request.json
     if not data: return jsonify({"status": "error", "message": "No data received"}), 400
-    
+
     signal_id = data.get('signal_id')
     context = signal_context_cache.pop(signal_id, {})
     full_feedback = {**context, **data}
-    
+
     feedback_path = "trade_feedback.json"
     with feedback_file_lock:
         try:
@@ -402,6 +447,78 @@ def feedback_trade():
             with open(feedback_path, "w") as f:
                 json.dump([full_feedback], f, indent=2)
     return jsonify({"status": "success"}), 200
+
+# === ADMIN PANEL ROUTES ===
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'admin_id' not in session:
+            flash("Anda harus login sebagai admin untuk mengakses halaman ini.", "warning")
+            return redirect(url_for('admin_login_page'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login_page():
+    form = LoginForm()
+    if form.validate_on_submit():
+        username = form.username.data
+        password = form.password.data
+        conn = get_db()
+        admin = conn.execute("SELECT * FROM admins WHERE username = ?", (username,)).fetchone()
+        if admin and check_password_hash(admin['password'], password):
+            session['admin_id'] = admin['id']
+            flash('Login admin berhasil!', 'success')
+            return redirect(url_for('admin_dashboard'))
+        else:
+            flash('Username atau password admin salah.', 'danger')
+    return render_template('admin_login.html', form=form)
+
+@app.route('/admin/logout')
+@admin_required
+def admin_logout():
+    session.pop('admin_id', None)
+    flash('Anda telah logout dari panel admin.', 'info')
+    return redirect(url_for('admin_login_page'))
+
+@app.route('/admin/dashboard')
+@admin_required
+def admin_dashboard():
+    conn = get_db()
+    users = conn.execute("SELECT id, username, start_date, end_date, status, proof_filename FROM users ORDER BY id").fetchall()
+    return render_template('admin_dashboard.html', users=users)
+
+@app.route('/admin/extend_license', methods=['POST'])
+@admin_required
+def extend_license():
+    user_id = request.form.get('user_id')
+    days_to_add = int(request.form.get('days', 30))
+
+    conn = get_db()
+    user = conn.execute("SELECT end_date, status FROM users WHERE id = ?", (user_id,)).fetchone()
+
+    if user:
+        current_end_date = datetime.strptime(user['end_date'], '%Y-%m-%d').date()
+        # Jika lisensi sudah kadaluarsa, perpanjang dari hari ini
+        if current_end_date < date.today():
+            new_end_date = date.today() + timedelta(days=days_to_add)
+        else:
+            new_end_date = current_end_date + timedelta(days=days_to_add)
+
+        # Jika statusnya pending, ubah jadi active
+        new_status = 'active' if user['status'] == 'pending_activation' else user['status']
+
+        conn.execute(
+            "UPDATE users SET end_date = ?, status = ?, duration_pending = NULL, proof_filename = NULL WHERE id = ?",
+            (new_end_date.isoformat(), new_status, user_id)
+        )
+        conn.commit()
+        flash(f"Lisensi untuk user ID {user_id} berhasil diperpanjang selama {days_to_add} hari.", "success")
+    else:
+        flash(f"User ID {user_id} tidak ditemukan.", "danger")
+
+    return redirect(url_for('admin_dashboard'))
+
 
 # === SOCKET.IO EVENTS ===
 @socketio.on('connect')

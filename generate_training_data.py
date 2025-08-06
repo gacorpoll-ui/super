@@ -10,15 +10,13 @@
 # 2. Jalankan skrip ini dari terminal: python generate_training_data.py
 
 import pandas as pd
-import numpy as np
 import json
 import logging
 import re
-from datetime import datetime
 
 # Impor fungsi-fungsi yang kita butuhkan dari skrip lain
 from data_fetching import get_candlestick_data
-from technical_indicators import (
+from indicators import (
     detect_structure,
     detect_order_blocks_multi,
     detect_fvg_multi,
@@ -26,7 +24,8 @@ from technical_indicators import (
     detect_pinbar,
     get_daily_high_low,
     get_pivot_points,
-    extract_features_full
+    extract_features_full,
+    detect_continuation_patterns
 )
 
 # --- Konfigurasi ---
@@ -38,7 +37,7 @@ MT5_TERMINAL_PATH = r"C:\\Program Files\\ExclusiveMarkets MetaTrader5\\terminal6
 OUTPUT_JSON_PATH = 'trade_feedback_generated.json'
 CANDLES_TO_FETCH = 1000
 
-def reconstruct_features_for_trade(trade_row):
+def reconstruct_features_for_trade(trade_row, indicator_settings):
     """
     Mengambil data historis dan merekonstruksi fitur untuk satu baris trade.
     """
@@ -57,7 +56,7 @@ def reconstruct_features_for_trade(trade_row):
         clean_symbol = re.sub(r'[cm]$', '', symbol).upper()
 
         df_history = get_candlestick_data(clean_symbol, timeframe, CANDLES_TO_FETCH, MT5_TERMINAL_PATH)
-        
+
         if df_history is None or df_history.empty:
             logging.warning(f"Tidak dapat mengambil data historis untuk trade #{ticket} ({clean_symbol}). Dilewati.")
             return None
@@ -67,11 +66,15 @@ def reconstruct_features_for_trade(trade_row):
         if len(df_snapshot) < 50:
             logging.warning(f"Data snapshot tidak cukup untuk analisis pada trade #{ticket}. Dilewati.")
             return None
-        
-        structure, _ = detect_structure(df_snapshot)
-        order_blocks = detect_order_blocks_multi(df_snapshot, structure_filter=structure)
-        fvg_zones = detect_fvg_multi(df_snapshot)
-        patterns = detect_engulfing(df_snapshot) + detect_pinbar(df_snapshot)
+
+        structure, _ = detect_structure(df_snapshot, **indicator_settings.get('structure', {}))
+        order_blocks = detect_order_blocks_multi(df_snapshot, structure_filter=structure, **indicator_settings.get('order_block', {}))
+        fvg_zones = detect_fvg_multi(df_snapshot, **indicator_settings.get('fvg', {}))
+        patterns = (
+            detect_engulfing(df_snapshot) +
+            detect_pinbar(df_snapshot, **indicator_settings.get('pinbar', {})) +
+            detect_continuation_patterns(df_snapshot, **indicator_settings.get('continuation', {}))
+        )
         boundary = get_daily_high_low(df_snapshot)
         pivot = get_pivot_points(df_snapshot)
 
@@ -107,20 +110,28 @@ def main():
         logging.error(f"Gagal membaca file CSV yang sudah bersih: {e}")
         return
 
-    # --- PERUBAHAN: Memeriksa kolom 'ticket' bukan 'position' ---
+    # Load indicator settings from config
+    try:
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+        indicator_settings = config.get('indicator_settings', {})
+        logging.info("Setelan indikator berhasil dimuat dari config.json")
+    except (FileNotFoundError, json.JSONDecodeError):
+        indicator_settings = {} # Fallback to defaults if config is missing
+        logging.warning("File config.json tidak ditemukan. Menggunakan setelan indikator default.")
+
     required_cols = ['open_time', 'ticket', 'symbol', 'type', 'open_price', 'profit']
     missing_cols = [col for col in required_cols if col not in history_df.columns]
     if missing_cols:
         logging.error(f"FATAL: Kolom yang dibutuhkan tidak ditemukan: {missing_cols}")
         return
 
-    # Data sudah bersih, jadi kita hanya filter untuk trade yang sudah ditutup
     closed_trades_df = history_df[history_df['type'].isin(['buy', 'sell'])].copy()
     logging.info(f"Ditemukan {len(closed_trades_df)} trade yang sudah ditutup untuk diproses.")
 
     training_data = []
     for index, row in closed_trades_df.iterrows():
-        reconstructed_data = reconstruct_features_for_trade(row)
+        reconstructed_data = reconstruct_features_for_trade(row, indicator_settings)
         if reconstructed_data:
             training_data.append(reconstructed_data)
 

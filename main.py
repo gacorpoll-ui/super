@@ -10,20 +10,16 @@ import time
 import numpy as np
 import xgboost as xgb
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, Any
 import json
 
-from data_fetching import get_candlestick_data, DataCache
-from gng_model import initialize_gng_models
+from data_fetching import DataCache
 from log_handler import WebServerHandler
 from learning import analyze_and_adapt_profiles
 from signal_generator import (
     analyze_tf_opportunity,
     build_signal_format,
-    make_signal_id,
-    get_open_positions_per_tf,
-    get_active_orders,
-    is_far_enough
+    make_signal_id
 )
 from server_comm import send_signal_to_server
 
@@ -61,9 +57,9 @@ def load_config(filepath: str = "config.json") -> Dict[str, Any]:
         logging.critical("Error saat memuat konfigurasi: %s", e)
         exit()
 
-def initialize_models(config: Dict[str, Any]) -> tuple[dict, dict]:
-    """Inisialisasi semua model (GNG, XGBoost) untuk semua simbol."""
-    gng_models, xgb_models = {}, {}
+def initialize_models(config: Dict[str, Any]) -> dict:
+    """Inisialisasi semua model XGBoost untuk semua simbol."""
+    xgb_models = {}
     global_conf = config.get('global_settings', {})
     symbols = global_conf.get('symbols_to_analyze', [])
     
@@ -79,7 +75,7 @@ def initialize_models(config: Dict[str, Any]) -> tuple[dict, dict]:
             logging.error("GAGAL memuat model AI untuk %s: %s.", symbol, e)
             xgb_models[symbol] = None
             
-    return gng_models, xgb_models
+    return xgb_models
 
 def handle_opportunity(opp: Dict[str, Any], symbol: str, tf: str, config: Dict[str, Any], xgb_model: xgb.XGBClassifier, profile_name: str):
     """Memproses, memvalidasi, dan mengirim sinyal jika ada peluang yang memenuhi syarat."""
@@ -96,15 +92,15 @@ def handle_opportunity(opp: Dict[str, Any], symbol: str, tf: str, config: Dict[s
     logging.info("✅ [%s|%s|%s] SINYAL DITEMUKAN! Peluang %s memenuhi syarat. Skor: %.2f (Min: %.1f).", profile_name, symbol, tf, opp['signal'], opp['score'], confidence_threshold)
     
     if xgb_model and opp.get('features') is not None and opp['features'].size > 0:
-        logging.info("[Arshy | %s|%s] Meminta validasi kuantitatif dari Catelya...", profile_name, symbol, tf)
+        logging.info("[Arshy | %s|%s|%s] Meminta validasi kuantitatif dari Catelya...", profile_name, symbol, tf)
         features = np.array(opp['features']).reshape(1, -1)
         win_probability = xgb_model.predict_proba(features)[0][1]
         
         if win_probability < config.get('strategy_profiles', {}).get(profile_name, {}).get('xgboost_confidence_threshold', 0.75):
-            logging.warning("[Catelya | %s|%s] Probabilitas keberhasilan rendah (%.2f%%). Rekomendasi: BATALKAN.", profile_name, symbol, tf, win_probability * 100)
+            logging.warning("[Catelya | %s|%s|%s] Probabilitas keberhasilan rendah (%.2f%%). Rekomendasi: BATALKAN.", profile_name, symbol, tf, win_probability * 100)
             return False
         
-        logging.info("[Catelya | %s|%s] Probabilitas keberhasilan terhitung: %.2f%%. Rekomendasi: LANJUTKAN.", profile_name, symbol, tf, win_probability * 100)
+        logging.info("[Catelya | %s|%s|%s] Probabilitas keberhasilan terhitung: %.2f%%. Rekomendasi: LANJUTKAN.", profile_name, symbol, tf, win_probability * 100)
 
     # --- Persiapan & Pengiriman Sinyal ---
     order_type_to_use = opp.get('order_type', opp['signal'])
@@ -115,16 +111,23 @@ def handle_opportunity(opp: Dict[str, Any], symbol: str, tf: str, config: Dict[s
     )
     
     # Payload sekarang menyertakan semua konteks untuk pembelajaran
+    api_key = os.environ.get('API_KEY')
+    secret_key = os.environ.get('SECRET_KEY')
+    if not api_key or not secret_key:
+        logging.error("API_KEY atau SECRET_KEY tidak ditemukan di environment variables. Sinyal tidak bisa dikirim.")
+        return False
+
     payload = {
         "symbol": symbol,
         "signal_json": signal_json,
-        "api_key": global_config['api_key'],
+        "api_key": api_key,
         "server_url": global_config['server_url'],
-        "secret_key": global_config['secret_key'],
+        "secret_key": secret_key,
         "order_type": order_type_to_use,
         "score": opp.get('score'),
         "info": opp.get('info'),
-        "profile_name": profile_name
+        "profile_name": profile_name,
+        "score_components": opp.get('score_components')
     }
     
     send_status = send_signal_to_server(**payload)
@@ -145,6 +148,25 @@ def process_profile(profile_name: str, config: Dict[str, Any], models: Dict[str,
     profile_config = config['strategy_profiles'][profile_name]
     global_config = config['global_settings']
     
+    # --- PENGEMBANGAN: Cek jam aktif untuk profil tertentu ---
+    active_hours = profile_config.get('active_hours_utc')
+    if active_hours:
+        current_utc_hour = datetime.utcnow().hour
+        is_active = False
+        for hour_range in active_hours:
+            try:
+                start, end = map(int, hour_range.split('-'))
+                if start <= current_utc_hour < end:
+                    is_active = True
+                    break
+            except ValueError:
+                logging.warning("Format 'active_hours_utc' salah di config untuk profil '%s'. Seharusnya 'HH-HH'. Contoh: ['08-10', '14-16']", profile_name)
+                continue
+
+        if not is_active:
+            logging.info("Profil '%s' tidak aktif pada jam ini (UTC %d). Dilewati.", profile_name, current_utc_hour)
+            return
+
     logging.info("--- Memproses Profil: '%s' ---", profile_name)
 
     for symbol in global_config['symbols_to_analyze']:
@@ -162,10 +184,10 @@ def process_profile(profile_name: str, config: Dict[str, Any], models: Dict[str,
             try:
                 opp = analyze_tf_opportunity(
                     symbol=symbol, tf=tf, mt5_path=global_config['mt5_terminal_path'],
-                    gng_model=None, gng_feature_stats=None, # GNG dinonaktifkan sementara
                     confidence_threshold=0.0,
                     min_distance_pips_per_tf=profile_config['min_distance_pips_per_tf'],
-                    weights=adapted_weights # Gunakan bobot yang sudah diadaptasi
+                    weights=adapted_weights, # Gunakan bobot yang sudah diadaptasi
+                    indicator_settings=config.get('indicator_settings', {})
                 )
                 if opp and opp.get('signal') != "WAIT":
                     signal_sent = handle_opportunity(opp, symbol, tf, config, models['xgb'].get(symbol), profile_name)
@@ -184,7 +206,7 @@ def main():
     active_signals = {symbol: {} for symbol in symbols}
     signal_cooldown = {}
 
-    _, xgb_models = initialize_models(config)
+    xgb_models = initialize_models(config)
     all_models = {'xgb': xgb_models}
 
     logging.info("="*50)
