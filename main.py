@@ -22,6 +22,7 @@ from signal_generator import (
     make_signal_id
 )
 from server_comm import send_signal_to_server
+from agent import RuleBasedAgent
 
 # --- Global States ---
 DATA_CACHE = DataCache()
@@ -77,19 +78,20 @@ def initialize_models(config: Dict[str, Any]) -> dict:
             
     return xgb_models
 
-def handle_opportunity(opp: Dict[str, Any], symbol: str, tf: str, config: Dict[str, Any], xgb_model: xgb.XGBClassifier, profile_name: str):
+def handle_opportunity(opp: Dict[str, Any], symbol: str, tf: str, config: Dict[str, Any], xgb_model: xgb.XGBClassifier, profile_name: str, agent: RuleBasedAgent):
     """Memproses, memvalidasi, dan mengirim sinyal jika ada peluang yang memenuhi syarat."""
     global active_signals, signal_cooldown
     
     profile_config = config['strategy_profiles'][profile_name]
     global_config = config['global_settings']
-    confidence_threshold = profile_config['confidence_threshold']
+
+    # --- PENGEMBANGAN: Gunakan Agent untuk membuat keputusan ---
+    decision = agent.decide(opp)
     
-    if abs(opp['score']) < confidence_threshold:
-        logging.info("⏳ [%s|%s|%s] SINYAL WAIT. Skor (%.2f) di bawah threshold (%.1f).", profile_name, symbol, tf, opp['score'], confidence_threshold)
+    if decision == "REJECT":
         return False
 
-    logging.info("✅ [%s|%s|%s] SINYAL DITEMUKAN! Peluang %s memenuhi syarat. Skor: %.2f (Min: %.1f).", profile_name, symbol, tf, opp['signal'], opp['score'], confidence_threshold)
+    logging.info("✅ [%s|%s|%s] SINYAL DITERIMA AGENT! Peluang %s. Skor: %.2f.", profile_name, symbol, tf, opp['signal'], opp['score'])
     
     if xgb_model and opp.get('features') is not None and opp['features'].size > 0:
         logging.info("[Arshy | %s|%s|%s] Meminta validasi kuantitatif dari Catelya...", profile_name, symbol, tf)
@@ -141,7 +143,7 @@ def handle_opportunity(opp: Dict[str, Any], symbol: str, tf: str, config: Dict[s
         
     return False
 
-def process_profile(profile_name: str, config: Dict[str, Any], models: Dict[str, Any], adapted_weights: Dict[str, float]):
+def process_profile(profile_name: str, config: Dict[str, Any], models: Dict[str, Any], adapted_weights: Dict[str, float], agent: RuleBasedAgent):
     """Menjalankan seluruh siklus analisis untuk satu profil strategi."""
     global signal_cooldown
     
@@ -190,7 +192,7 @@ def process_profile(profile_name: str, config: Dict[str, Any], models: Dict[str,
                     indicator_settings=config.get('indicator_settings', {})
                 )
                 if opp and opp.get('signal') != "WAIT":
-                    signal_sent = handle_opportunity(opp, symbol, tf, config, models['xgb'].get(symbol), profile_name)
+                    signal_sent = handle_opportunity(opp, symbol, tf, config, models['xgb'].get(symbol), profile_name, agent)
                     if signal_sent:
                         break 
             except Exception as e:
@@ -209,6 +211,11 @@ def main():
     xgb_models = initialize_models(config)
     all_models = {'xgb': xgb_models}
 
+    # --- PENGEMBANGAN: Inisialisasi Agent ---
+    # Di masa depan, agent bisa dipilih berdasarkan konfigurasi
+    agent = RuleBasedAgent(confidence_threshold=5.0) # Threshold bisa diambil dari config
+    logging.info("Menggunakan Agent: %s", agent.name)
+
     logging.info("="*50)
     logging.info("Bot Trading AI v4.0 (Profile & Learning Enabled) Siap Beraksi!")
     logging.info("="*50)
@@ -222,8 +229,11 @@ def main():
             
             for profile_name, profile_config in config.get("strategy_profiles", {}).items():
                 if profile_config.get("enabled", False):
+                    # Re-inisialisasi agent untuk setiap profil agar menggunakan threshold yang tepat
+                    agent = RuleBasedAgent(confidence_threshold=profile_config.get('confidence_threshold', 5.0))
+
                     adapted_weights = adapted_weights_per_profile.get(profile_name, config.get("base_weights", {}))
-                    process_profile(profile_name, config, all_models, adapted_weights)
+                    process_profile(profile_name, config, all_models, adapted_weights, agent)
             
             sleep_duration = config.get('global_settings', {}).get('main_loop_sleep_seconds', 20)
             logging.info("Semua profil telah dianalisis. Istirahat %d detik...", sleep_duration)

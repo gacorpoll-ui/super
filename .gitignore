@@ -29,3 +29,7 @@ static/bukti_pembayaran/
 
 # Log files
 *.log
+
+# Node.js
+smart_agent_js/node_modules/
+smart_agent_js/package-lock.json
