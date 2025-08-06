@@ -312,17 +312,19 @@ def extract_features_full(
     last_price = df['close'].iloc[-1]
     features = [
         last_price,
-        calculate_atr_dynamic(df),
+        calculate_atr_dynamic(df, period=14),  # Volatilitas
+        calculate_roc(df, period=12),         # Momentum Jangka Pendek
+        calculate_roc(df, period=24),         # Momentum Jangka Panjang
         min([ob['distance'] for ob in order_blocks]) if order_blocks else 0,
         max([ob['strength'] for ob in order_blocks]) if order_blocks else 0,
         min([fvg['distance'] for fvg in fvg_zones]) if fvg_zones else 0,
         max([fvg['strength'] for fvg in fvg_zones]) if fvg_zones else 0,
         int(any(p['type'].startswith('ENGULFING') for p in patterns)),
+        int(any(p['type'].startswith('PINBAR') for p in patterns)),
         boundary.get('distance_to_high', 0),
         boundary.get('distance_to_low', 0),
         pivot.get('r1', 0) - last_price,
         pivot.get('s1', 0) - last_price,
-        # Tambah fitur lain sesuai kebutuhan...
     ]
     return np.array(features, dtype=float)
 
@@ -448,5 +450,19 @@ def calculate_optimal_trade_entry(swing_start_price: float, swing_end_price: flo
         ote_zone['mid'] = low_val + (price_range * fib_levels['0.705'])
         ote_zone['lower'] = low_val + (price_range * fib_levels['0.618'])
     return ote_zone
+
+def calculate_roc(df: pd.DataFrame, period: int = 12) -> float:
+    """Menghitung Rate of Change (Momentum)."""
+    if len(df) < period + 1:
+        return 0.0
+
+    current_price = df['close'].iloc[-1]
+    past_price = df['close'].iloc[-1 - period]
+
+    if past_price == 0:
+        return 0.0
+
+    roc = ((current_price - past_price) / past_price) * 100
+    return float(roc)
 
 # ========== END OF MODULE ==========
