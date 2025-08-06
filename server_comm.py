@@ -7,7 +7,7 @@
 from __future__ import annotations
 import logging
 import requests
-from typing import Dict
+from typing import Dict, Any
 
 def send_signal_to_server(**payload: Any) -> str:
     """Mengirim sinyal trading ke server dan mengembalikan status keberhasilan."""

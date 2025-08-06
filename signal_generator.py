@@ -10,20 +10,18 @@ from collections import Counter
 import MetaTrader5 as mt5
 
 from data_fetching import get_candlestick_data
-from technical_indicators import (
+from indicators import (
     detect_structure,
     detect_order_blocks_multi,
     detect_fvg_multi,
-    detect_eqh_eql,
     detect_liquidity_sweep,
     calculate_optimal_trade_entry,
     detect_engulfing,
     detect_pinbar,
     detect_continuation_patterns,
-)
-from gng_model import (
-    get_gng_input_features_full,
-    get_gng_context,
+    extract_features_full,
+    get_daily_high_low,
+    get_pivot_points,
 )
 
 def get_open_positions_per_tf(symbol: str, tf: str, mt5_path: str) -> int:
@@ -89,11 +87,10 @@ def analyze_tf_opportunity(
     symbol: str,
     tf: str,
     mt5_path: str,
-    gng_model,
-    gng_feature_stats: Dict[str, Dict[str, Any]],
     confidence_threshold: float,
     min_distance_pips_per_tf: Dict[str, float],
     weights: Dict[str, float],
+    indicator_settings: Dict[str, Any],
     htf_bias: str = 'NEUTRAL',
     htf_config: Dict[str, Any] = None
 ) -> Optional[Dict[str, Any]]:
@@ -107,56 +104,73 @@ def analyze_tf_opportunity(
         
     # --- Analisis Komponen ---
     current_price = df['close'].iloc[-1]
-    structure_str, swing_points = detect_structure(df)
-    atr = df['high'].sub(df['low']).rolling(14).mean().iloc[-1]
-    order_blocks = detect_order_blocks_multi(df, structure_filter=structure_str)
-    fvg_zones = detect_fvg_multi(df)
-    liquidity_sweep = detect_liquidity_sweep(df)
-    patterns = detect_engulfing(df) + detect_pinbar(df) + detect_continuation_patterns(df)
+    atr = df['high'].sub(df['low']).rolling(indicator_settings.get('atr', {}).get('period', 14)).mean().iloc[-1]
+
+    # Menggunakan setelan dari config, dengan fallback ke nilai default jika tidak ada
+    structure_str, swing_points = detect_structure(df, **indicator_settings.get('structure', {}))
+    order_blocks = detect_order_blocks_multi(df, structure_filter=structure_str, **indicator_settings.get('order_block', {}))
+    fvg_zones = detect_fvg_multi(df, **indicator_settings.get('fvg', {}))
+    liquidity_sweep = detect_liquidity_sweep(df, **indicator_settings.get('liquidity_sweep', {}))
+
+    patterns = (
+        detect_engulfing(df) +
+        detect_pinbar(df, **indicator_settings.get('pinbar', {})) +
+        detect_continuation_patterns(df, **indicator_settings.get('continuation', {}))
+    )
     
     # --- Kalkulasi Skor ---
     score = 0.0
     info_list: List[str] = []
+    score_components: Dict[str, float] = Counter()
     logging.info(f"[Arshy | {tf}] --- Memulai Analisis Konfluensi ---")
     
     # Skor Struktur
-    structure_score = 0
-    if "BULLISH_BOS" in structure_str: structure_score += weights.get("BULLISH_BOS", 3.0)
-    if "BEARISH_BOS" in structure_str: structure_score += weights.get("BEARISH_BOS", -3.0)
-    if "HH" in structure_str: structure_score += weights.get("HH", 1.0)
-    if "LL" in structure_str: structure_score += weights.get("LL", -1.0)
-    if "HL" in structure_str: structure_score += weights.get("HL", 1.0)
-    if "LH" in structure_str: structure_score += weights.get("LH", -1.0)
+    structure_components = Counter()
+    if "BULLISH_BOS" in structure_str: structure_components['BULLISH_BOS'] += 1
+    if "BEARISH_BOS" in structure_str: structure_components['BEARISH_BOS'] += 1
+    if "HH" in structure_str: structure_components['HH'] += 1
+    if "LL" in structure_str: structure_components['LL'] += 1
+    if "HL" in structure_str: structure_components['HL'] += 1
+    if "LH" in structure_str: structure_components['LH'] += 1
+    structure_score = sum(count * weights.get(name, 0) for name, count in structure_components.items())
     score += structure_score
+    score_components.update(structure_components)
     logging.info(f"[Arshy | {tf}] Analisis Struktur: Teridentifikasi '{structure_str}' (Skor: {structure_score:+.2f})")
 
     # Skor Zona (FVG, OB) & Event (LS)
     if fvg_zones:
         nearest_fvg = fvg_zones[0]
-        fvg_score = (weights.get('FVG_BULLISH', 3.0) if 'BULLISH' in nearest_fvg['type'] else weights.get('FVG_BEARISH', -3.0)) * nearest_fvg['strength']
+        fvg_type = nearest_fvg['type']
+        fvg_score = weights.get(fvg_type, 0) * nearest_fvg['strength']
         score += fvg_score
-        logging.info(f"[Arshy | {tf}] Zona Inefisiensi (FVG): {nearest_fvg['type']} terdeteksi (Skor: {fvg_score:+.2f})")
+        score_components[fvg_type] += nearest_fvg['strength'] # Simpan kekuatan sbg 'count'
+        logging.info(f"[Arshy | {tf}] Zona Inefisiensi (FVG): {fvg_type} terdeteksi (Skor: {fvg_score:+.2f})")
     if liquidity_sweep:
-        ls_score = weights.get(liquidity_sweep[-1].get('type'))
-        if ls_score:
-            score += ls_score
-            logging.info(f"[Arshy | {tf}] Perburuan Likuiditas: {liquidity_sweep[-1].get('type')} terdeteksi (Skor: {ls_score:+.2f})")
+        ls_type = liquidity_sweep[-1].get('type')
+        ls_score = weights.get(ls_type, 0)
+        score += ls_score
+        score_components[ls_type] += 1
+        logging.info(f"[Arshy | {tf}] Perburuan Likuiditas: {ls_type} terdeteksi (Skor: {ls_score:+.2f})")
     if order_blocks:
         nearest_ob = order_blocks[0]
-        ob_score = (weights.get('BULLISH_OB', 1.0) if 'BULLISH' in nearest_ob['type'] else weights.get('BEARISH_OB', -1.0)) * nearest_ob['strength']
+        ob_type = nearest_ob['type']
+        ob_score = weights.get(ob_type, 0) * nearest_ob['strength']
         score += ob_score
-        logging.info(f"[Arshy | {tf}] Zona Order Block: {nearest_ob['type']} terdeteksi (Skor: {ob_score:+.2f})")
+        score_components[ob_type] += nearest_ob['strength']
+        logging.info(f"[Arshy | {tf}] Zona Order Block: {ob_type} terdeteksi (Skor: {ob_score:+.2f})")
 
     # Skor Pola Minor
-    pattern_score = sum(weights.get(p.get('type'), 0) for p in patterns)
+    pattern_components = Counter(p.get('type') for p in patterns)
+    pattern_score = sum(count * weights.get(name, 0) for name, count in pattern_components.items())
     if pattern_score != 0:
-        bullish_patterns = [p.get('type') for p in patterns if weights.get(p.get('type'), 0) > 0]
-        bearish_patterns = [p.get('type') for p in patterns if weights.get(p.get('type'), 0) < 0]
-        bull_summary = ", ".join([f"{count}x {name}" for name, count in Counter(bullish_patterns).items()])
-        bear_summary = ", ".join([f"{count}x {name}" for name, count in Counter(bearish_patterns).items()])
+        bullish_patterns = {name: count for name, count in pattern_components.items() if weights.get(name, 0) > 0}
+        bearish_patterns = {name: count for name, count in pattern_components.items() if weights.get(name, 0) < 0}
+        bull_summary = ", ".join([f"{count}x {name}" for name, count in bullish_patterns.items()])
+        bear_summary = ", ".join([f"{count}x {name}" for name, count in bearish_patterns.items()])
         summary_parts = [s for s in [f"Bullish: [{bull_summary}]" if bull_summary else "", f"Bearish: [{bear_summary}]" if bear_summary else ""] if s]
         logging.info(f"[Arshy | {tf}] Konfluensi Pola Minor: {' | '.join(summary_parts)} (Skor Total: {pattern_score:+.2f})")
     score += pattern_score
+    score_components.update(pattern_components)
     logging.info(f"[Arshy | {tf}] Kalkulasi Skor Awal: {score:.2f}")
 
     # --- Penerapan HTF Bias ---
@@ -244,9 +258,16 @@ def analyze_tf_opportunity(
         tp = entry_price_chosen - (atr * 3.0)
 
     logging.info(f"[Arshy | {tf}] --- Analisis Selesai --- | Rekomendasi: {direction} | Tipe: {order_type} | Skor Keyakinan: {score:.2f}")
+
+    # --- Ekstraksi Fitur untuk XGBoost ---
+    boundary = get_daily_high_low(df)
+    pivot = get_pivot_points(df)
+    features = extract_features_full(df, structure_str, order_blocks, fvg_zones, patterns, boundary, pivot)
+
     return {
         "signal": direction, "order_type": order_type, "entry_price_chosen": entry_price_chosen,
         "sl": sl, "tp": tp, "score": score, "info": "; ".join(info_list),
-        "features": get_gng_input_features_full(df, gng_feature_stats, tf) if gng_model else None, 
+        "features": features,
+        "score_components": dict(score_components), # Convert Counter to dict for JSON serialization
         "tf": tf, "symbol": symbol,
     }
