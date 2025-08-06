@@ -306,10 +306,26 @@ def extract_features_full(
     fvg_zones: List[Dict[str, Any]],
     patterns: List[Dict[str, Any]],
     boundary: Dict[str, Any],
-    pivot: Dict[str, float]
+    pivot: Dict[str, float],
+    liquidity_sweeps: List[Dict[str, Any]]
 ) -> np.ndarray:
     """Keluarkan vektor fitur komprehensif untuk AI/ML."""
     last_price = df['close'].iloc[-1]
+
+    # Fitur Liquidity Sweep
+    has_bullish_sweep = 0
+    has_bearish_sweep = 0
+    distance_to_sweep = 0
+    if liquidity_sweeps:
+        # Cari sweep terbaru berdasarkan 'sweep_time'
+        # Asumsi 'sweep_time' adalah objek yang bisa dibandingkan (seperti pd.Timestamp)
+        latest_sweep = max(liquidity_sweeps, key=lambda x: x['sweep_time'])
+        if latest_sweep['type'] == 'BULLISH_LS':
+            has_bullish_sweep = 1
+        elif latest_sweep['type'] == 'BEARISH_LS':
+            has_bearish_sweep = 1
+        distance_to_sweep = abs(last_price - latest_sweep['swept_level'])
+
     features = [
         last_price,
         calculate_atr_dynamic(df),
@@ -322,7 +338,10 @@ def extract_features_full(
         boundary.get('distance_to_low', 0),
         pivot.get('r1', 0) - last_price,
         pivot.get('s1', 0) - last_price,
-        # Tambah fitur lain sesuai kebutuhan...
+        # Fitur baru dari Liquidity Sweep
+        has_bullish_sweep,
+        has_bearish_sweep,
+        distance_to_sweep,
     ]
     return np.array(features, dtype=float)
 

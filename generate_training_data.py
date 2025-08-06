@@ -26,7 +26,8 @@ from technical_indicators import (
     detect_pinbar,
     get_daily_high_low,
     get_pivot_points,
-    extract_features_full
+    extract_features_full,
+    detect_liquidity_sweep
 )
 
 # --- Konfigurasi ---
@@ -57,7 +58,7 @@ def reconstruct_features_for_trade(trade_row):
         clean_symbol = re.sub(r'[cm]$', '', symbol).upper()
 
         df_history = get_candlestick_data(clean_symbol, timeframe, CANDLES_TO_FETCH, MT5_TERMINAL_PATH)
-        
+
         if df_history is None or df_history.empty:
             logging.warning(f"Tidak dapat mengambil data historis untuk trade #{ticket} ({clean_symbol}). Dilewati.")
             return None
@@ -67,15 +68,18 @@ def reconstruct_features_for_trade(trade_row):
         if len(df_snapshot) < 50:
             logging.warning(f"Data snapshot tidak cukup untuk analisis pada trade #{ticket}. Dilewati.")
             return None
-        
+
         structure, _ = detect_structure(df_snapshot)
         order_blocks = detect_order_blocks_multi(df_snapshot, structure_filter=structure)
         fvg_zones = detect_fvg_multi(df_snapshot)
         patterns = detect_engulfing(df_snapshot) + detect_pinbar(df_snapshot)
         boundary = get_daily_high_low(df_snapshot)
         pivot = get_pivot_points(df_snapshot)
+        liquidity_sweeps = detect_liquidity_sweep(df_snapshot)
 
-        features_vector = extract_features_full(df_snapshot, structure, order_blocks, fvg_zones, patterns, boundary, pivot)
+        features_vector = extract_features_full(
+            df_snapshot, structure, order_blocks, fvg_zones, patterns, boundary, pivot, liquidity_sweeps
+        )
         result = "WIN" if profit > 0 else "LOSS"
 
         return {
