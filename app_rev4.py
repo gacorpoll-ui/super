@@ -505,8 +505,8 @@ def extend_license():
         else:
             new_end_date = current_end_date + timedelta(days=days_to_add)
 
-        # Jika statusnya pending, ubah jadi active
-        new_status = 'active' if user['status'] == 'pending_activation' else user['status']
+        # Perpanjangan lisensi oleh admin selalu membuat status menjadi 'active'
+        new_status = 'active'
 
         conn.execute(
             "UPDATE users SET end_date = ?, status = ?, duration_pending = NULL, proof_filename = NULL WHERE id = ?",
