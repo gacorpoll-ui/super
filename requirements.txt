@@ -1,0 +1,14 @@
+Flask
+Flask-SocketIO
+Flask-WTF
+gunicorn
+eventlet
+pandas
+numpy
+xgboost
+scikit-learn
+# MetaTrader5 is Windows-only, cannot be installed in this environment
+# MetaTrader5
+matplotlib
+python-dateutil
+Werkzeug
