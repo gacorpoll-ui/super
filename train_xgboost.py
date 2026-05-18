@@ -12,6 +12,7 @@ import logging
 import re
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+import sys
 
 # --- Konfigurasi Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -64,7 +65,7 @@ def train_model_for_symbol(symbol_data, symbol_name):
     y = np.array(labels)
 
     if len(X) < 50:
-        logging.warning(f"Data latih untuk {symbol_name} tidak mencukupi. Pelatihan dilewati.")
+        logging.warning(f"Data latih untuk {symbol_name} tidak mencukupi ({len(X)} records). Pelatihan dilewati.")
         return
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
@@ -80,7 +81,7 @@ def train_model_for_symbol(symbol_data, symbol_name):
         eval_metric='logloss',
         **params  # Menggunakan parameter terbaik yang sudah kita simpan
     )
-    
+
     xgb_classifier.fit(X_train, y_train)
     logging.info("Pelatihan model final selesai.")
 
@@ -97,22 +98,20 @@ def train_model_for_symbol(symbol_data, symbol_name):
     xgb_classifier.save_model(model_output_path)
     logging.info(f"Model AI final untuk {symbol_name} telah disimpan ke '{model_output_path}'.")
 
-def main():
+def main(json_data_string: str):
     """
-    Fungsi utama untuk memuat data dan mengorkestrasi pelatihan per simbol.
+    Fungsi utama untuk memuat data dari string JSON dan mengorkestrasi pelatihan per simbol.
     """
-    feedback_file_path = "trade_feedback_generated.json"
     try:
-        with open(feedback_file_path, "r") as f:
-            trade_data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        logging.error(f"Gagal memuat '{feedback_file_path}': {e}.")
+        trade_data = json.loads(json_data_string)
+    except json.JSONDecodeError as e:
+        logging.error(f"Gagal memuat data dari string JSON: {e}.")
         return
 
     logging.info(f"Berhasil memuat {len(trade_data)} total record data latih.")
     df = pd.DataFrame(trade_data)
     df['clean_symbol'] = df['symbol'].apply(lambda s: re.sub(r'[cm]$', '', s).upper())
-    
+
     grouped = df.groupby('clean_symbol')
     logging.info(f"Data akan dilatih untuk simbol: {list(grouped.groups.keys())}")
 
@@ -121,4 +120,10 @@ def main():
         train_model_for_symbol(symbol_records, symbol_name)
 
 if __name__ == '__main__':
-    main()
+    # The JSON data is passed as a command-line argument
+    if len(sys.argv) != 2:
+        print("Usage: python train_xgboost.py '<json_string>'")
+        sys.exit(1)
+
+    json_string = sys.argv[1]
+    main(json_string)
