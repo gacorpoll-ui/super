@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Admin Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .btn { padding: 5px 10px; border-radius: 3px; border: none; color: white; cursor: pointer; }
+        .btn-success { background-color: #28a745; }
+        .form-inline { display: inline; }
+        .alert { padding: 15px; margin-bottom: 20px; border: 1px solid transparent; border-radius: 4px; }
+        .alert-success { color: #155724; background-color: #d4edda; border-color: #c3e6cb; }
+        .logout { float: right; }
+    </style>
+</head>
+<body>
+
+    <h1>Admin Dashboard
+        <a href="{{ url_for('admin_logout') }}" class="logout btn btn-success">Logout</a>
+    </h1>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <table>
+        <thead>
+            <tr>
+                <th>User ID</th>
+                <th>Username</th>
+                <th>Status</th>
+                <th>License Start</th>
+                <th>License End</th>
+                <th>Payment Proof</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for user in users %}
+            <tr>
+                <td>{{ user.id }}</td>
+                <td>{{ user.username }}</td>
+                <td>{{ user.status }}</td>
+                <td>{{ user.start_date }}</td>
+                <td>{{ user.end_date }}</td>
+                <td>
+                    {% if user.proof_filename %}
+                        <a href="{{ url_for('static', filename='bukti_pembayaran/' + user.proof_filename) }}" target="_blank">View Proof</a>
+                    {% else %}
+                        N/A
+                    {% endif %}
+                </td>
+                <td>
+                    <form method="POST" action="{{ url_for('extend_license') }}" class="form-inline">
+                        <input type="hidden" name="user_id" value="{{ user.id }}">
+                        <select name="days">
+                            <option value="7">7 Days</option>
+                            <option value="30" selected>30 Days</option>
+                            <option value="90">90 Days</option>
+                            <option value="365">365 Days</option>
+                        </select>
+                        <button type="submit" class="btn btn-success">Extend</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+</body>
+</html>

@@ -7,17 +7,25 @@
 from __future__ import annotations
 import logging
 import requests
-from typing import Dict
+from typing import Dict, Any
 
 def send_signal_to_server(**payload: Any) -> str:
     """Mengirim sinyal trading ke server dan mengembalikan status keberhasilan."""
     
-    # Ekstrak URL dan hapus dari payload agar tidak terkirim sebagai JSON
+    # Ekstrak URL dan secret_key, lalu hapus dari payload
     server_url = payload.pop("server_url", None)
+    secret_key = payload.pop("secret_key", None)
+
     if not server_url:
         logging.error("server_url tidak ditemukan di payload. Sinyal tidak dikirim.")
         return 'FAILED'
         
+    headers = {}
+    if secret_key:
+        headers['X-Secret-Key'] = secret_key
+    else:
+        logging.warning("secret_key tidak ditemukan di payload. Mengirim tanpa otorisasi.")
+
     signal_json = payload.get("signal_json", {})
     if not isinstance(signal_json, dict):
         logging.error("Tipe data signal_json tidak valid (harus dictionary). Sinyal tidak dikirim.")
@@ -37,7 +45,7 @@ def send_signal_to_server(**payload: Any) -> str:
         payload['signal'] = "WAIT"
 
     try:
-        response = requests.post(server_url, json=payload, timeout=10)
+        response = requests.post(server_url, json=payload, headers=headers, timeout=10)
         log_message = f"Sinyal {payload.get('signal', 'UNKNOWN')} untuk {symbol} dikirim."
 
         if response.status_code == 200:
@@ -77,5 +85,13 @@ def cancel_signal(signal_id: str, active_signals: Dict[str, Dict[str, any]], api
         "BuyLimit": "", "BuyLimitSL": "", "BuyLimitTP": "", "SellLimit": "", "SellLimitSL": "", "SellLimitTP": "",
     }
 
-    send_signal_to_server(symbol, cancel_json, api_key, server_url, secret_key)
+    payload = {
+        "symbol": symbol,
+        "signal_json": cancel_json,
+        "api_key": api_key,
+        "server_url": server_url,
+        "secret_key": secret_key,
+        "order_type": "CANCEL_ORDER"
+    }
+    send_signal_to_server(**payload)
     del active_signals[signal_id]

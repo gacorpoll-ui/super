@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# SQLite database
+*.db
+*.sqlite3
+
+# Virtual environment
+.env
+venv/
+env/
+
+# IDE and editor folders
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Generated files
+# We want to keep config.json and the trade feedback jsons
+xgboost_model_*.json
+feature_importance_*.png
+
+# Sensitive data
+static/bukti_pembayaran/
+
+# Log files
+*.log
+
+# Node.js
+smart_agent_js/node_modules/
+smart_agent_js/package-lock.json

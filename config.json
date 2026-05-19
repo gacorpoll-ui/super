@@ -2,15 +2,46 @@
     "global_settings": {
         "symbols_to_analyze": ["XAUUSD", "BTCUSD"],
         "mt5_terminal_path": "C:\\\\Program Files\\\\ExclusiveMarkets MetaTrader5\\\\terminal64.exe",
-        "api_key": "c1b086d4-a681-48df-957f-6fcc35a82f6d",
+        "api_key": "SET_VIA_ENVIRONMENT_VARIABLE_API_KEY",
         "server_url": "http://127.0.0.1:5000/api/internal/submit_signal",
-        "secret_key": "c1b086d4-a681-48df-957f-6fcc35a82f6d",
+        "secret_key": "SET_VIA_ENVIRONMENT_VARIABLE_SECRET_KEY",
         "main_loop_sleep_seconds": 20,
-        "signal_rejection_pip_distance": 100.0
+        "signal_rejection_pip_distance": 100.0,
+        "point_size_map": {
+            "XAUUSD": 0.01,
+            "BTCUSD": 0.1,
+            "EURUSD": 0.0001
+        }
     },
     "logging": {
         "level": "INFO",
         "format": "%(asctime)s - %(levelname)s - %(message)s"
+    },
+    "indicator_settings": {
+        "atr": {
+            "period": 14
+        },
+        "structure": {
+            "swing_lookback": 5
+        },
+        "order_block": {
+            "lookback": 15,
+            "max_age": 20
+        },
+        "fvg": {
+            "min_gap": 0.0002,
+            "max_age": 20
+        },
+        "pinbar": {
+            "min_ratio": 2.0
+        },
+        "continuation": {
+            "base_max_candles": 4,
+            "body_threshold": 1.2
+        },
+        "liquidity_sweep": {
+            "min_candles_for_swing": 5
+        }
     },
     "base_weights": {
         "BULLISH_BOS": 3.0, "BEARISH_BOS": -3.0, "HH": 1.0, "LL": -1.0, "HL": 1.0, "LH": -1.0,
@@ -35,6 +66,15 @@
             "signal_cooldown_minutes": 5,
             "confidence_threshold": 10.0,
             "min_distance_pips_per_tf": { "M15": 10 }
+        },
+        "news_trading": {
+            "enabled": false,
+            "timeframes": ["M1"],
+            "active_hours_utc": ["12-14", "18-20"],
+            "max_position_per_tf": 1,
+            "signal_cooldown_minutes": 60,
+            "confidence_threshold": 12.0,
+            "min_distance_pips_per_tf": { "M1": 20 }
         }
     },
     "learning": {
